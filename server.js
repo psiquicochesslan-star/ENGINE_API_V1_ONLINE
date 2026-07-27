@@ -1,148 +1,60 @@
-/**
- * ENGINE_API_V1 V1_FINAL CORRIGIDO - ESM (type: module)
- * Compatível com package.json "type": "module"
- * Aceita { jogo } OU { dezenas }
- */
-import express from 'express';
-import fs from 'fs';
-import path from 'path';
-import crypto from 'crypto';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const MINI_PATH = path.join(__dirname, 'private', 'MINI_SECA.txt');
-const SHA_ESPERADO = 'f1a336f18f35afd0680023872448937a73307e0e896b6d9a818985899950cf5a';
+// Carrega MINI
+const miniPath = path.join(__dirname, 'private', 'MINI_SECA.txt');
+let MINI = [];
+let MINI_SHA = '';
 
-console.log('=== ENGINE_API_V1 V1_FINAL CORRIGIDO ESM INICIANDO ===');
-console.log('MINI_PATH:', MINI_PATH);
-
-if (!fs.existsSync(MINI_PATH)) {
-  console.error('ERRO: MINI_SECA.txt não encontrada em', MINI_PATH);
-  process.exit(1);
+try {
+  const raw = fs.readFileSync(miniPath, 'utf8');
+  MINI = raw.split('\n').map(l=>l.trim()).filter(l=>l.length>0).map(l=> l.split(/[\s,;]+/).map(Number).filter(n=>n>=1&&n<=25));
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  MINI_SHA = hash;
+  console.log(`MINI carregada: ${MINI.length} jogos em RAM`);
+  console.log(`SHA MINI: ${MINI_SHA}`);
+} catch(e){
+  console.error('ERRO ao carregar MINI:', e.message);
 }
 
-const miniRaw = fs.readFileSync(MINI_PATH, 'utf8');
-const sha = crypto.createHash('sha256').update(miniRaw).digest('hex');
-console.log('SHA MINI:', sha);
-console.log('SHA esperado:', SHA_ESPERADO);
-
-const jogos = miniRaw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-  const nums = l.split(/[,\s;]+/).map(n => parseInt(n,10)).filter(n=>n>=1&&n<=25);
-  return nums;
-}).filter(a=>a.length===15);
-
-console.log(`MINI carregada: ${jogos.length} jogos em RAM`);
-
-const jogosMasks = jogos.map(arr => {
-  let m = 0n;
-  for (const n of arr) m |= 1n << BigInt(n-1);
-  return m;
+app.use((req,res,next)=>{
+  res.header('Access-Control-Allow-Origin','*');
+  res.header('Access-Control-Allow-Methods','GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers','Content-Type');
+  if(req.method==='OPTIONS') return res.sendStatus(200);
+  next();
 });
 
-function toMask(arr){ let m=0n; for(const n of arr) m|=1n<<BigInt(n-1); return m; }
-function popcountBigInt(n){ let c=0; while(n){ c+= Number(n & 1n); n >>= 1n; } return c; }
-function validarJogo(arr){
-  if(!Array.isArray(arr)) return false;
-  if(arr.length!==15) return false;
-  const set = new Set(arr);
-  if(set.size!==15) return false;
-  for(const v of arr){ if(!Number.isInteger(v)||v<1||v>25) return false; }
-  return true;
-}
-
-app.get('/api/health', (req,res)=>{
-  res.json({
-    status:'online',
-    engine:'ENGINE_API_V1',
-    version:'1.0 CORRIGIDO ESM jogo||dezenas',
-    sha_mini: sha,
-    total_jogos: jogos.length,
-    sha_ok: sha===SHA_ESPERADO
-  });
+app.get('/api/stats', (req,res)=>{
+  res.json({ total: MINI.length, sha: MINI_SHA, mini_sha: MINI_SHA, status: 'ONLINE', engine: 'V1_FINAL' });
+});
+app.get('/stats', (req,res)=>{
+  res.json({ total: MINI.length, sha: MINI_SHA, mini_sha: MINI_SHA, status: 'ONLINE', engine: 'V1_FINAL' });
 });
 
 app.post('/api/consultar', (req,res)=>{
-  // CORREÇÃO CONTRATO
-  const jogo = req.body.jogo || req.body.dezenas;
-  const faixasSolicitadas = req.body.faixas || null;
-
-  if (!jogo) {
-    return res.status(400).json({ error: "Envie 15 dezenas únicas entre 1 e 25" });
-  }
-  if (!validarJogo(jogo)) {
-    return res.status(400).json({ error: "Envie 15 dezenas únicas entre 1 e 25" });
-  }
-
-  const consultaId = crypto.randomUUID();
-  const maskConsulta = toMask(jogo);
-
-  const faixas = { "11":0, "12":0, "13":0, "14":0, "15":0 };
-  const filtrados = { "11":[], "12":[], "13":[], "14":[], "15":[] };
-
-  for(let i=0;i<jogosMasks.length;i++){
-    const inter = jogosMasks[i] & maskConsulta;
-    const acertos = popcountBigInt(inter);
-    if(acertos>=11){
-      const k = String(acertos);
-      if(faixas[k]!==undefined){
-        faixas[k]++;
-        if(acertos>=12 || (acertos===11 && filtrados["11"].length<5000)){
-          filtrados[k].push(i);
-        }
-      }
+  try{
+    const dezenas = (req.body.dezenas||[]).map(Number);
+    if(dezenas.length!==15) return res.status(400).json({error:'Precisa 15 dezenas'});
+    const setSorteio = new Set(dezenas);
+    let c15=0,c14=0,c13=0,c12=0,c11=0;
+    for(const jogo of MINI){
+      let acertos=0;
+      for(const n of jogo){ if(setSorteio.has(n)) acertos++; }
+      if(acertos===15) c15++; else if(acertos===14) c14++; else if(acertos===13) c13++; else if(acertos===12) c12++; else if(acertos===11) c11++;
     }
-  }
-
-  if(!global._consultas) global._consultas = new Map();
-  global._consultas.set(consultaId, {
-    jogo,
-    faixas,
-    filtradosIndices: filtrados,
-    faixasSolicitadas,
-    created: Date.now(),
-    sha
-  });
-  for(const [id, data] of global._consultas.entries()){
-    if(Date.now()-data.created > 10*60*1000) global._consultas.delete(id);
-  }
-
-  res.json({
-    consulta_id: consultaId,
-    faixas,
-    sha_mini: sha,
-    total_mini: jogos.length
-  });
+    res.json({ totais:{'15':c15,'14':c14,'13':c13,'12':c12,'11':c11}, c14,c13,c12,c11, '15p':c15,'14p':c14,'13p':c13,'12p':c12,'11p':c11, consultaId:'MS-'+Date.now().toString(36).toUpperCase(), timestamp:new Date().toISOString() });
+  }catch(e){ res.status(500).json({error:e.message}); }
 });
+app.post('/consultar', (req,res)=>{ res.redirect(307, '/api/consultar'); });
 
-app.post('/api/download', (req,res)=>{
-  const { consulta_id, faixa } = req.body;
-  if(!consulta_id || !faixa) return res.status(400).json({ error: "consulta_id e faixa obrigatórios" });
-  const consulta = global._consultas?.get(consulta_id);
-  if(!consulta) return res.status(404).json({ error: "Consulta expirada ou não encontrada (10min)" });
-
-  const indices = consulta.filtradosIndices[faixa];
-  if(!indices) return res.status(400).json({ error: "Faixa inválida" });
-
-  const linhas = indices.map(idx => jogos[idx].join(','));
-  const conteudo = `MINI_SECA 81.491 - RESULTADO FILTRADO\nConsulta ID: ${consulta_id}\nJogo consultado: ${consulta.jogo.join(',')}\nFaixa: ${faixa} pontos\nEncontrados: ${linhas.length}\nSHA MINI: ${consulta.sha}\nMINI original permanece protegida no servidor\nGerado: ${new Date().toISOString()}\n\n${linhas.join('\n')}`;
-
-  res.setHeader('Content-Type','text/plain; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="MINI_FILTRADO_${faixa}_${consulta_id.slice(0,8)}.txt"`);
-  res.send(conteudo);
-});
-
-app.get('*', (req,res)=>{
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.listen(PORT, ()=>{
-  console.log(`ENGINE_API_V1 V1_FINAL CORRIGIDO ESM rodando: http://localhost:${PORT}`);
-});
+app.get('/', (req,res)=>{ res.sendFile(path.join(__dirname,'public','index.html')); });
+app.listen(PORT, ()=>{ console.log(`ENGINE ONLINE na porta ${PORT}`); });
